@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@source "../views/**/*.blade.php";
+@source "../../app/**/*.php";
+
+@theme {
+    --font-sans: "Inter", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --color-brand-50: #eff6ff;
+    --color-brand-100: #dbeafe;
+    --color-brand-500: #3b82f6;
+    --color-brand-600: #2563eb;
+    --color-brand-700: #1d4ed8;
+    --color-brand-950: #172554;
+}
+
+@layer base {
+    html {
+        color-scheme: light;
+        background: #f8fafc;
+    }
+
+    body {
+        @apply min-h-screen bg-slate-50 font-sans text-slate-900 antialiased;
+    }
+
+    button,
+    input,
+    select {
+        font: inherit;
+    }
+
+    button,
+    [role="button"] {
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
+}
