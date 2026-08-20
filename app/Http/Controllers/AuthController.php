@@ -7,6 +7,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\View\View;
+use App\Enums\UserRole;
 
 class AuthController extends Controller
 {
@@ -21,7 +22,9 @@ class AuthController extends Controller
     {
         abort_unless(app()->environment(['local', 'testing']), 404);
 
-        abort_unless(in_array($role, ['dispatcher', 'supervisor', 'administrator'], true), 404);
+        $userRole = UserRole::tryFrom($role);
+
+        abort_unless($userRole !== null, 404);
 
         $user = User::query()
             ->where('role', $role)

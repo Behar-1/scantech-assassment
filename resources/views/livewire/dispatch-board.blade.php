@@ -42,6 +42,40 @@
         </div>
     @endif
 
+    @if ($errors->has('conflict'))
+        <div
+            class="mb-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm"
+            role="alert"
+        >
+            <svg
+                class="mt-0.5 size-5 shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+            >
+                <path d="M12 3l9 18H3L12 3z"></path>
+                <path d="M12 9v4"></path>
+                <path d="M12 17h.01"></path>
+            </svg>
+
+            <div>
+                <p class="font-semibold">This trip was changed elsewhere.</p>
+
+                <p class="mt-1">
+                    {{ $errors->first('conflict') }}
+                </p>
+
+                <p class="mt-1 text-xs text-amber-700">
+                    The latest trip state has already been loaded.
+                </p>
+            </div>
+        </div>
+    @endif
+
     @if ($errors->any())
         <div class="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm" role="alert">
             <div class="flex items-start gap-3">
@@ -118,7 +152,7 @@
                             class="pl-10"
                             type="search"
                             placeholder="Trip, customer, route or driver"
-                            wire:model.live="search"
+                            wire:model.live.debounce.400ms="search"
                             autocomplete="off"
                         />
                     </div>
@@ -128,21 +162,24 @@
                     <label for="status-filter" class="mb-1.5 block text-xs font-semibold text-slate-700">Trip status</label>
                     <x-ui.select id="status-filter" wire:model.live="status">
                         <option value="">All statuses</option>
-                        <option value="pending">Pending</option>
-                        <option value="assigned">Assigned</option>
-                        <option value="driver_arriving">Driver arriving</option>
-                        <option value="in_progress">In progress</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
+
+                        @foreach (\App\Enums\TripStatus::cases() as $tripStatus)
+                            <option value="{{ $tripStatus->value }}">
+                                {{ $tripStatus->label() }}
+                            </option>
+                        @endforeach
                     </x-ui.select>
                 </div>
 
                 <div>
                     <label for="driver-filter" class="mb-1.5 block text-xs font-semibold text-slate-700">Assigned driver</label>
-                    <x-ui.select id="driver-filter" wire:model.live="driverFilter">
+                   <x-ui.select id="driver-filter" wire:model.live="driverFilter">
                         <option value="">All drivers</option>
+
                         @foreach ($drivers as $driver)
-                            <option value="{{ $driver->id }}">{{ $driver->name }}</option>
+                            <option value="{{ $driver->id }}">
+                                {{ $driver->name }}
+                            </option>
                         @endforeach
                     </x-ui.select>
                 </div>
@@ -326,17 +363,20 @@
                         <x-ui.select id="target-driver" wire:model="targetDriverId">
                             <option value="">Choose driver</option>
                             @foreach ($drivers as $driver)
-                                <option value="{{ $driver->id }}">{{ $driver->name }} &middot; {{ str($driver->status)->replace('_', ' ')->title() }}</option>
+                                <option value="{{ $driver->id }}">
+                                    {{ $driver->name }} &middot; {{ str($driver->status->value)->replace('_', ' ')->title() }}
+                                </option>
                             @endforeach
                         </x-ui.select>
 
-                        @if (auth()->user()->can_dispatch && (!$selectedTrip->driver_id || auth()->user()->role === 'supervisor'))
+                       @if (auth()->user()->canDispatchTrips()
+                        && (!$selectedTrip->driver_id || auth()->user()->isSupervisor()))
                             <x-ui.button
                                 class="mt-3 w-full"
                                 variant="primary"
                                 wire:click="assignDriver({{ $selectedTrip->id }})"
                                 wire:loading.attr="disabled"
-                                wire:target="assignDriver"
+                                wire:target="assignDriver({{ $selectedTrip->id }})"
                             >
                                 <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                     <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M19 8v6"></path><path d="M16 11h6"></path>
@@ -354,11 +394,11 @@
                                 <span class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-semibold text-slate-400">&euro;</span>
                                 <x-ui.input id="selected-fare" class="pl-8" type="number" min="0" step="0.01" wire:model="selectedFare" />
                             </div>
-                            @if (auth()->user()->can_dispatch)
-                                <x-ui.button
-                                    wire:click="saveFare({{ $selectedTrip->id }})"
-                                    wire:loading.attr="disabled"
-                                    wire:target="saveFare"
+                            @if (auth()->user()->canDispatchTrips())
+                             <x-ui.button
+                                wire:click="saveFare({{ $selectedTrip->id }})"
+                                wire:loading.attr="disabled"
+                                wire:target="saveFare({{ $selectedTrip->id }})"
                                 >
                                     Save
                                 </x-ui.button>
@@ -366,7 +406,7 @@
                         </div>
                     </section>
 
-                    @if (auth()->user()->can_dispatch)
+                   @if (auth()->user()->canDispatchTrips())
                         <section class="p-5" aria-labelledby="status-actions-heading">
                             <h3 id="status-actions-heading" class="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Status actions</h3>
                             <div class="mt-4 grid grid-cols-2 gap-2">
@@ -378,7 +418,7 @@
                         </section>
                     @endif
 
-                    @if (auth()->user()->role === 'supervisor')
+                    @if (auth()->user()->isSupervisor())
                         <section class="p-5" aria-labelledby="supervisor-actions-heading">
                             <h3 id="supervisor-actions-heading" class="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Supervisor actions</h3>
                             <p class="mt-2 text-xs leading-5 text-slate-500">Cancellation is a terminal action and should be used deliberately.</p>
@@ -387,7 +427,7 @@
                                 variant="danger"
                                 wire:click="cancelTrip({{ $selectedTrip->id }})"
                                 wire:loading.attr="disabled"
-                                wire:target="cancelTrip"
+                                wire:target="cancelTrip({{ $selectedTrip->id }})"
                             >
                                 <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                     <circle cx="12" cy="12" r="9"></circle><path d="M9 9l6 6"></path><path d="M15 9l-6 6"></path>
@@ -401,16 +441,31 @@
                         <h3 id="status-history-heading" class="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Recent status history</h3>
                         <ol class="mt-4 space-y-0">
                             @forelse ($selectedHistory as $history)
-                                <li class="group relative grid grid-cols-[18px_minmax(0,1fr)] gap-3 pb-4 last:pb-0">
-                                    <span class="absolute left-[8px] top-4 h-full w-px bg-slate-200 group-last:hidden" aria-hidden="true"></span>
-                                    <span class="relative mt-1 size-4 rounded-full border-4 border-white bg-brand-500 ring-1 ring-brand-200" aria-hidden="true"></span>
+                               <li class="group relative grid grid-cols-[18px_minmax(0,1fr)] gap-3 pb-4 last:pb-0">
+                                    <span
+                                        class="absolute left-[8px] top-4 h-full w-px bg-slate-200 group-last:hidden"
+                                        aria-hidden="true"
+                                    ></span>
+
+                                    <span
+                                        class="relative mt-1 size-4 rounded-full border-4 border-white bg-brand-500 ring-1 ring-brand-200"
+                                        aria-hidden="true"
+                                    ></span>
+
                                     <div>
                                         <p class="text-xs font-semibold text-slate-800">
                                             {{ str($history->previous_status ?? 'No status')->replace('_', ' ')->title() }}
+
                                             <span class="mx-1 text-slate-300">&rarr;</span>
+
                                             {{ str($history->new_status)->replace('_', ' ')->title() }}
                                         </p>
-                                        <p class="mt-1 text-[11px] text-slate-400">{{ optional($history->created_at)->format('Y-m-d H:i:s') }}</p>
+
+                                        <p class="mt-1 text-[11px] text-slate-400">
+                                            {{ $history->actor?->name ?? 'Unknown actor' }}
+                                            &middot;
+                                            {{ optional($history->created_at)->format('Y-m-d H:i:s') }}
+                                        </p>
                                     </div>
                                 </li>
                             @empty
