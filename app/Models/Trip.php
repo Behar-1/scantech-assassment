@@ -9,6 +9,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Trip extends Model
 {
+
+    use HasFactory;
+
     protected $fillable = [
         'customer_name',
         'pickup_address',
@@ -32,6 +35,7 @@ class Trip extends Model
             'dropoff_longitude' => 'decimal:7',
             'estimated_fare' => 'decimal:2',
             'version' => 'integer',
+           'status' => \App\Enums\TripStatus::class,
         ];
     }
 

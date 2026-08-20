@@ -8,7 +8,7 @@ use Illuminate\Notifications\Notifiable;
 
 class User extends Authenticatable
 {
-    use Notifiable;
+    use HasFactory, Notifiable;
 
     protected $fillable = [
         'name',
@@ -28,6 +28,29 @@ class User extends Authenticatable
         return [
             'password' => 'hashed',
             'can_dispatch' => 'boolean',
+            'role' => \App\Enums\UserRole::class,
         ];
+    }
+
+    public function isDispatcher(): bool
+    {
+        return $this->role === \App\Enums\UserRole::DISPATCHER;
+    }
+
+    public function isSupervisor(): bool
+    {
+        return $this->role === \App\Enums\UserRole::SUPERVISOR;
+    }
+
+    public function isAdministrator(): bool
+    {
+        return $this->role === \App\Enums\UserRole::ADMINISTRATOR;
+    }
+
+    public function canDispatchTrips(): bool
+    {
+        return $this->can_dispatch
+            && $this->role instanceof \App\Enums\UserRole
+            && $this->role->canDispatch();
     }
 }

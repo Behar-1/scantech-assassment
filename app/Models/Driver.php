@@ -8,6 +8,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Driver extends Model
 {
+
+    use HasFactory;
+
     protected $fillable = [
         'name',
         'status',
@@ -22,6 +25,7 @@ class Driver extends Model
             'last_latitude' => 'decimal:7',
             'last_longitude' => 'decimal:7',
             'last_location_at' => 'datetime',
+            'status' => \App\Enums\DriverStatus::class,
         ];
     }
 
