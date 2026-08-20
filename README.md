@@ -13,6 +13,55 @@ The application is intentionally imperfect. Candidates are expected to investiga
 - SQLite by default for quick local setup
 - MySQL is also supported through `.env`
 
+# Dispatch Platform Stabilization
+
+## Overview
+
+This assessment stabilizes the critical dispatch workflow without replacing
+the existing Laravel/Livewire application.
+
+## Implemented
+
+- Atomic driver assignment
+- Atomic driver reassignment
+- Driver release on completion
+- Driver release on cancellation
+- Centralized trip lifecycle
+- Optimistic concurrency using Trip.version
+- Conflict activity logging
+- Server-side authorization
+- Server-side pagination
+- Debounced search
+- Pagination reset on filtering
+- Eager loading of drivers
+- Dispatch-board indexes
+- Audit logging
+- Status history
+- Automated tests
+
+## Architecture
+
+Livewire is responsible for UI orchestration.
+
+Application services contain business operations:
+
+- AssignmentService
+- TripLifecycleService
+- TripFareService
+
+Supporting infrastructure:
+
+- DispatchBoardQuery
+- ActivityLogService
+- TripPolicy
+
+Domain values:
+
+- TripStatus
+- DriverStatus
+- UserRole
+- ActivityAction
+
 ## Setup
 
 ```bash
