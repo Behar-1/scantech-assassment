@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class ActivityLog extends Model
 {
+    use HasFactory;
+    
     const UPDATED_AT = null;
 
     protected $fillable = [
@@ -26,6 +28,7 @@ class ActivityLog extends Model
             'previous_values' => 'array',
             'new_values' => 'array',
             'created_at' => 'datetime',
+            'action' => \App\Enums\ActivityAction::class,
         ];
     }
 }
