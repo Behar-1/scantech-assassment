@@ -2,190 +2,244 @@
 
 namespace App\Livewire;
 
-use App\Models\ActivityLog;
+use App\Enums\TripStatus;
+use App\Exceptions\DriverUnavailableException;
+use App\Exceptions\InvalidTripTransitionException;
+use App\Exceptions\StaleTripException;
+use App\Exceptions\TripNotAssignableException;
 use App\Models\Driver;
 use App\Models\Trip;
-use App\Models\TripStatusHistory;
-use Illuminate\Pagination\LengthAwarePaginator;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Validator;
+use App\Queries\DispatchBoardQuery;
+use App\Services\Dispatch\AssignmentService;
+use App\Services\Dispatch\TripFareService;
+use App\Services\Dispatch\TripLifecycleService;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Livewire\Attributes\Layout;
 use Livewire\Component;
+use Livewire\WithPagination;
+use Throwable;
 
 #[Layout('layouts.app')]
 class DispatchBoard extends Component
 {
+    use WithPagination;
+    use AuthorizesRequests;
+
     public string $search = '';
+
     public string $status = '';
+
     public string $driverFilter = '';
-    public int $page = 1;
+
     public int $perPage = 15;
 
     public ?int $selectedTripId = null;
+
     public ?int $targetDriverId = null;
+
     public ?float $selectedFare = null;
+
     public ?int $selectedVersion = null;
+
+    public function updatedSearch(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedStatus(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedDriverFilter(): void
+    {
+        $this->resetPage();
+    }
 
     public function selectTrip(int $tripId): void
     {
         $trip = Trip::query()->findOrFail($tripId);
 
-        $this->selectedTripId = $trip->id;
-        $this->targetDriverId = $trip->driver_id;
-        $this->selectedFare = $trip->estimated_fare;
-        $this->selectedVersion = $trip->version;
+        $this->authorize('view', $trip);
 
+        $this->loadSelectedTripState($trip);
         $this->resetErrorBag();
     }
 
-    public function assignDriver(int $tripId): void
-    {
-        $validator = Validator::make(
-            [
-                'targetDriverId' => $this->targetDriverId,
+    public function assignDriver(
+        int $tripId,
+        AssignmentService $assignmentService,
+    ): void {
+        $this->validate([
+            'targetDriverId' => [
+                'required',
+                'integer',
+                'exists:drivers,id',
             ],
-            [
-                'targetDriverId' => ['required', 'integer', 'exists:drivers,id'],
-            ]);
-
-        if ($validator->fails()) {
-            $this->setErrorBag($validator->errors());
-            return;
-        }
+        ]);
 
         $trip = Trip::query()->findOrFail($tripId);
+
+        $this->authorize('assign', $trip);
+
         $driver = Driver::query()->findOrFail($this->targetDriverId);
 
-        if ($driver->status !== 'available') {
-            $this->addError('assignment', 'The selected driver is no longer available.');
-            return;
+        try {
+            $updatedTrip = $assignmentService->assign(
+                trip: $trip,
+                targetDriver: $driver,
+                actor: auth()->user(),
+                expectedVersion: $this->selectedVersion,
+            );
+
+            $this->loadSelectedTripState($updatedTrip);
+
+            session()->flash(
+                'success',
+                'Driver assignment updated successfully.'
+            );
+        } catch (DriverUnavailableException|TripNotAssignableException $e) {
+            $this->addError('assignment', $e->getMessage());
+            $this->refreshSelected();
+        } catch (StaleTripException $e) {
+            $this->handleConflict($trip, $e);
+        } catch (Throwable $e) {
+            report($e);
+
+            $this->addError(
+                'assignment',
+                'The assignment could not be completed. No changes were saved.'
+            );
         }
-
-        $previousTrip = $trip->only(['driver_id', 'status', 'version']);
-        $oldDriverId = $trip->driver_id;
-
-        // Makes the race easier to reproduce during the assessment.
-        usleep(250000);
-
-        $trip->driver_id = $driver->id;
-        $trip->status = 'assigned';
-        $trip->version = $trip->version + 1;
-        $trip->save();
-
-        $driver->status = 'assigned';
-        $driver->save();
-
-        ActivityLog::query()->create([
-            'actor_id' => Auth::id(),
-            'action' => $oldDriverId ? 'trip.reassigned' : 'trip.assigned',
-            'entity_type' => Trip::class,
-            'entity_id' => $trip->id,
-            'previous_values' => $previousTrip,
-            'new_values' => $trip->only(['driver_id', 'status', 'version']),
-            'reason' => null,
-            'created_at' => now(),
-        ]);
-
-        $this->selectedVersion = $trip->version;
-        session()->flash('success', 'Driver assignment updated.');
     }
 
-    public function cancelTrip(int $tripId): void
-    {
+    public function cancelTrip(
+        int $tripId,
+        TripLifecycleService $lifecycleService,
+    ): void {
         $trip = Trip::query()->findOrFail($tripId);
-        $previous = $trip->only(['status', 'driver_id', 'version']);
 
-        $trip->status = 'cancelled';
-        $trip->version = $trip->version + 1;
-        $trip->save();
+        $this->authorize('cancel', $trip);
 
-        ActivityLog::query()->create([
-            'actor_id' => Auth::id(),
-            'action' => 'trip.cancelled',
-            'entity_type' => Trip::class,
-            'entity_id' => $trip->id,
-            'previous_values' => $previous,
-            'new_values' => $trip->only(['status', 'driver_id', 'version']),
-            'reason' => 'Cancelled from dispatch board',
-            'created_at' => now(),
-        ]);
+        try {
+            $updatedTrip = $lifecycleService->transition(
+                trip: $trip,
+                targetStatus: TripStatus::CANCELLED,
+                actor: auth()->user(),
+                expectedVersion: $this->selectedVersion,
+                reason: 'Cancelled from dispatch board',
+            );
 
-        $this->selectedVersion = $trip->version;
-        session()->flash('success', 'Trip cancelled.');
+            $this->loadSelectedTripState($updatedTrip);
+
+            session()->flash('success', 'Trip cancelled.');
+        } catch (InvalidTripTransitionException|StaleTripException $e) {
+            if ($e instanceof StaleTripException) {
+                $this->handleConflict($trip, $e);
+                return;
+            }
+
+            $this->addError('status', $e->getMessage());
+        } catch (Throwable $e) {
+            report($e);
+
+            $this->addError(
+                'status',
+                'The trip could not be cancelled. No changes were saved.'
+            );
+        }
     }
 
-    public function changeStatus(int $tripId, string $status): void
-    {
-        $allowed = ['pending', 'assigned', 'driver_arriving', 'in_progress', 'completed', 'cancelled'];
+    public function changeStatus(
+        int $tripId,
+        string $status,
+        TripLifecycleService $lifecycleService,
+    ): void {
+        $trip = Trip::query()->findOrFail($tripId);
 
-        if (!in_array($status, $allowed, true)) {
+        $this->authorize('changeStatus', $trip);
+
+        $targetStatus = TripStatus::tryFrom($status);
+
+        if ($targetStatus === null) {
             $this->addError('status', 'Unknown trip status.');
             return;
         }
 
-        $trip = Trip::query()->findOrFail($tripId);
-        $previousStatus = $trip->status;
-        $previous = $trip->only(['status', 'driver_id', 'version']);
+        try {
+            $updatedTrip = $lifecycleService->transition(
+                trip: $trip,
+                targetStatus: $targetStatus,
+                actor: auth()->user(),
+                expectedVersion: $this->selectedVersion,
+            );
 
-        $trip->status = $status;
-        $trip->version = $trip->version + 1;
-        $trip->save();
+            $this->loadSelectedTripState($updatedTrip);
 
-        if ($status === 'completed' && $trip->driver) {
-            $trip->driver->status = 'available';
-            $trip->driver->save();
+            session()->flash('success', 'Trip status updated.');
+        } catch (InvalidTripTransitionException $e) {
+            $this->addError('status', $e->getMessage());
+        } catch (StaleTripException $e) {
+            $this->handleConflict($trip, $e);
+        } catch (Throwable $e) {
+            report($e);
+
+            $this->addError(
+                'status',
+                'The status update could not be completed. No changes were saved.'
+            );
         }
-
-        TripStatusHistory::query()->create([
-            'trip_id' => $trip->id,
-            'previous_status' => $previousStatus,
-            'new_status' => $status,
-            'changed_by' => Auth::id(),
-            'metadata' => ['source' => 'dispatch_board'],
-            'created_at' => now(),
-        ]);
-
-        ActivityLog::query()->create([
-            'actor_id' => Auth::id(),
-            'action' => 'trip.status_changed',
-            'entity_type' => Trip::class,
-            'entity_id' => $trip->id,
-            'previous_values' => $previous,
-            'new_values' => $trip->only(['status', 'driver_id', 'version']),
-            'reason' => null,
-            'created_at' => now(),
-        ]);
-
-        $this->selectedVersion = $trip->version;
-        session()->flash('success', 'Trip status updated.');
     }
 
-    public function saveFare(int $tripId): void
-    {
+    public function saveFare(
+        int $tripId,
+        TripFareService $fareService,
+    ): void {
         $this->validate([
-            'selectedFare' => ['required', 'numeric', 'min:0'],
+            'selectedFare' => [
+                'required',
+                'numeric',
+                'min:0',
+            ],
         ]);
 
         $trip = Trip::query()->findOrFail($tripId);
-        $previous = $trip->only(['estimated_fare', 'version']);
 
-        $trip->estimated_fare = $this->selectedFare;
-        $trip->version = $trip->version + 1;
-        $trip->save();
+        $this->authorize('updateFare', $trip);
 
-        ActivityLog::query()->create([
-            'actor_id' => Auth::id(),
-            'action' => 'trip.fare_updated',
-            'entity_type' => Trip::class,
-            'entity_id' => $trip->id,
-            'previous_values' => $previous,
-            'new_values' => $trip->only(['estimated_fare', 'version']),
-            'reason' => null,
-            'created_at' => now(),
-        ]);
+        if ($this->selectedVersion === null) {
+            $this->addError(
+                'selectedFare',
+                'The trip version is missing. Refresh the trip and try again.'
+            );
 
-        $this->selectedVersion = $trip->version;
-        session()->flash('success', 'Estimated fare updated.');
+            return;
+        }
+
+        try {
+            $updatedTrip = $fareService->update(
+                trip: $trip,
+                fare: (float) $this->selectedFare,
+                actor: auth()->user(),
+                expectedVersion: $this->selectedVersion,
+            );
+
+            $this->loadSelectedTripState($updatedTrip);
+
+            session()->flash(
+                'success',
+                'Estimated fare updated.'
+            );
+        } catch (StaleTripException $e) {
+            $this->handleConflict($trip, $e);
+        } catch (Throwable $e) {
+            report($e);
+
+            $this->addError(
+                'selectedFare',
+                'The fare could not be updated. No changes were saved.'
+            );
+        }
     }
 
     public function refreshSelected(): void
@@ -194,64 +248,92 @@ class DispatchBoard extends Component
             return;
         }
 
-        $trip = Trip::query()->findOrFail($this->selectedTripId);
-        $this->targetDriverId = $trip->driver_id;
-        $this->selectedFare = (float)$trip->estimated_fare;
-        $this->selectedVersion = $trip->version;
+        $trip = Trip::query()
+            ->with('driver:id,name,status')
+            ->findOrFail($this->selectedTripId);
+
+        $this->authorize('view', $trip);
+
+        $this->loadSelectedTripState($trip);
+        $this->resetErrorBag();
     }
 
     public function goToPage(int $page): void
     {
-        $this->page = max(1, $page);
+        $this->setPage(max(1, $page));
     }
 
-    public function render()
+    public function render(DispatchBoardQuery $boardQuery)
     {
-        $query = Trip::query()
-            ->when($this->search !== '', function ($query): void {
-                $term = '%' . $this->search . '%';
+        $status = $this->status !== ''
+            ? TripStatus::tryFrom($this->status)
+            : null;
 
-                $query->where(function ($query) use ($term): void {
-                    $query->where('id', 'like', $term)
-                        ->orWhere('customer_name', 'like', $term)
-                        ->orWhere('pickup_address', 'like', $term)
-                        ->orWhere('dropoff_address', 'like', $term)
-                        ->orWhereHas('driver', fn($driverQuery) => $driverQuery->where('name', 'like', $term));
-                });
-            })
-            ->when($this->status !== '', fn($query) => $query->where('status', $this->status))
-            ->when($this->driverFilter !== '', fn($query) => $query->where('driver_id', $this->driverFilter))
-            ->latest('id');
+        $driverId = $this->driverFilter !== ''
+            ? (int) $this->driverFilter
+            : null;
 
-        $allTrips = $query->get();
-        $pageItems = $allTrips->forPage($this->page, $this->perPage)->values();
-        $trips = new LengthAwarePaginator(
-            $pageItems,
-            $allTrips->count(),
-            $this->perPage,
-            $this->page,
-            ['path' => request()->url()]
+        $trips = $boardQuery->trips(
+            search: trim($this->search),
+            status: $status,
+            driverId: $driverId,
+            perPage: $this->perPage,
         );
 
         $selectedTrip = $this->selectedTripId
-            ? Trip::query()->find($this->selectedTripId)
+            ? Trip::query()
+                ->with('driver:id,name,status')
+                ->find($this->selectedTripId)
             : null;
 
         $selectedHistory = $selectedTrip
-            ? $selectedTrip->statusHistory()->limit(10)->get()
+            ? $selectedTrip->statusHistory()
+                ->with('actor:id,name')
+                ->limit(10)
+                ->get()
             : collect();
+
+        $counts = $boardQuery->counts();
 
         return view('livewire.dispatch-board', [
             'trips' => $trips,
-            'drivers' => Driver::query()->orderBy('name')->get(),
+            'drivers' => $boardQuery->drivers(),
             'selectedTrip' => $selectedTrip,
             'selectedHistory' => $selectedHistory,
             'counts' => [
-                'pending' => Trip::query()->where('status', 'pending')->count(),
-                'assigned' => Trip::query()->where('status', 'assigned')->count(),
-                'in_progress' => Trip::query()->where('status', 'in_progress')->count(),
-                'completed' => Trip::query()->where('status', 'completed')->count(),
+                'pending' => $counts[TripStatus::PENDING->value] ?? 0,
+                'assigned' => $counts[TripStatus::ASSIGNED->value] ?? 0,
+                'in_progress' => $counts[TripStatus::IN_PROGRESS->value] ?? 0,
+                'completed' => $counts[TripStatus::COMPLETED->value] ?? 0,
             ],
         ]);
+    }
+
+    private function loadSelectedTripState(Trip $trip): void
+    {
+        $this->selectedTripId = $trip->id;
+        $this->targetDriverId = $trip->driver_id;
+        $this->selectedFare = (float) $trip->estimated_fare;
+        $this->selectedVersion = $trip->version;
+    }
+
+    private function handleConflict(
+        Trip $trip,
+        StaleTripException $exception,
+    ): void {
+        $current = Trip::query()
+            ->with('driver:id,name,status')
+            ->findOrFail($trip->id);
+
+        $this->loadSelectedTripState($current);
+
+        $this->addError(
+            'conflict',
+            sprintf(
+                'This trip changed while you were editing it (version %d → %d). The latest state has been loaded. Review it before trying again.',
+                $exception->expectedVersion,
+                $exception->currentVersion,
+            )
+        );
     }
 }
